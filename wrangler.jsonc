@@ -14,11 +14,11 @@
     {
       "binding": "DB",
       "database_name": "voting-aifn1",
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "database_id": "1f53376a-285a-410a-9372-86fa0e9d5a03",
       "migrations_dir": "migrations"
     }
   ],
   "vars": {
-    "TURNSTILE_SITE_KEY": "1x00000000000000000000AA"
+    "TURNSTILE_SITE_KEY":"0x4AAAAAAF9BDxze0hPDiMBA"
   }
 }
