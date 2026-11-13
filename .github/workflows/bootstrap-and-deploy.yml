@@ -20,7 +20,6 @@ jobs:
     name: Bootstrap and Deploy AiFn1 PWA
     runs-on: ubuntu-latest
     timeout-minutes: 20
-
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -39,165 +38,78 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Validate files and secrets
+      - name: Validate required files and secrets
         shell: bash
         run: |
           set -euo pipefail
-
-          required_files=(
-            "package.json"
-            "wrangler.jsonc"
-            "src/index.js"
-            "src/eligible.json"
-            "public/index.html"
-            "public/admin.html"
-            "public/manifest.webmanifest"
-            "public/sw.js"
-            "migrations/0001_init.sql"
-            "scripts/bootstrap_d1.py"
-            "scripts/patch.py"
-            "scripts/qa.mjs"
-          )
-
-          for file in "${required_files[@]}"; do
-            if [ ! -f "$file" ]; then
-              echo "::error file=$file::File tidak ditemukan: $file"
-              exit 1
-            fi
+          for file in package.json wrangler.jsonc src/index.js src/eligible.json public/index.html public/admin.html public/manifest.webmanifest public/sw.js migrations/0001_init.sql scripts/bootstrap_d1.py scripts/patch.py scripts/qa.mjs; do
+            test -f "$file" || { echo "::error file=$file::File tidak ditemukan: $file"; exit 1; }
           done
-
-          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || {
-            echo "::error::CLOUDFLARE_ACCOUNT_ID belum tersedia"
-            exit 1
-          }
-
-          test -n "${CLOUDFLARE_API_TOKEN:-}" || {
-            echo "::error::CLOUDFLARE_API_TOKEN belum tersedia"
-            exit 1
-          }
-
-          test -n "${ADMIN_KEY:-}" || {
-            echo "::error::ADMIN_KEY belum tersedia"
-            exit 1
-          }
-
-          test -n "${TURNSTILE_SECRET_KEY:-}" || {
-            echo "::error::TURNSTILE_SECRET_KEY belum tersedia"
-            exit 1
-          }
-
-          test -n "${TURNSTILE_SITE_KEY:-}" || {
-            echo "::error::Turnstile Site Key belum diisi"
-            exit 1
-          }
-
-          if [ "${#ADMIN_KEY}" -lt 32 ]; then
-            echo "::error::ADMIN_KEY minimal 32 karakter"
-            exit 1
-          fi
-
-          echo "Semua file, secrets, dan input tersedia."
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || { echo "::error::CLOUDFLARE_ACCOUNT_ID belum tersedia"; exit 1; }
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || { echo "::error::CLOUDFLARE_API_TOKEN belum tersedia"; exit 1; }
+          test -n "${ADMIN_KEY:-}" || { echo "::error::ADMIN_KEY belum tersedia"; exit 1; }
+          test -n "${TURNSTILE_SECRET_KEY:-}" || { echo "::error::TURNSTILE_SECRET_KEY belum tersedia"; exit 1; }
+          test -n "${TURNSTILE_SITE_KEY:-}" || { echo "::error::Turnstile Site Key belum diisi"; exit 1; }
+          test "${#ADMIN_KEY}" -ge 32 || { echo "::error::ADMIN_KEY minimal 32 karakter"; exit 1; }
 
       - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Normalize Wrangler configuration
         shell: bash
         run: |
           set -euo pipefail
-          npm install --no-audit --no-fund
-
-      - name: Normalize configuration
-        shell: bash
-        run: |
-          set -euo pipefail
-
           python3 -c "import json,pathlib; p=pathlib.Path('wrangler.jsonc'); c=json.loads(p.read_text()); c.update({'name':'voting-aifn1','compatibility_date':'2026-11-11','workers_dev':True}); p.write_text(json.dumps(c,indent=2)+'\n')"
 
-          echo "Konfigurasi Wrangler dinormalisasi."
-
-      - name: Create or locate D1
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 scripts/bootstrap_d1.py
+      - name: Create or locate AiFn1 D1 database
+        run: python3 scripts/bootstrap_d1.py
 
       - name: Validate D1 configuration
         shell: bash
         run: |
           set -euo pipefail
-
-          python3 -c "import json; c=json.load(open('wrangler.jsonc')); d=c.get('d1_databases',[]); assert len(d)==1, 'Harus ada tepat satu D1'; assert d[0].get('binding')=='DB', 'Binding harus DB'; assert d[0].get('database_name')=='voting-aifn1', 'Nama D1 harus voting-aifn1'; assert d[0].get('database_id') not in ('','REPLACE_WITH_D1_DATABASE_ID'), 'D1 database_id belum terpasang'; print('D1 siap:',d[0]['database_id'])"
+          python3 -c "import json; c=json.load(open('wrangler.jsonc')); d=c.get('d1_databases',[]); assert len(d)==1; assert d[0].get('binding')=='DB'; assert d[0].get('database_name')=='voting-aifn1'; assert d[0].get('database_id') not in ('','REPLACE_WITH_D1_DATABASE_ID'); print('D1 siap:',d[0]['database_id'])"
 
       - name: Configure Turnstile Site Key
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 scripts/patch.py "$TURNSTILE_SITE_KEY"
+        run: python3 scripts/patch.py "$TURNSTILE_SITE_KEY"
 
-      - name: Run QA
+      - name: Validate AiFn1 roster deadline and fixes
         shell: bash
         run: |
           set -euo pipefail
-          npm run qa
-          node --check src/index.js
+          python3 -c "import json,pathlib; e=json.load(open('src/eligible.json')); w=pathlib.Path('src/index.js').read_text(); h=pathlib.Path('public/index.html').read_text(); sw=pathlib.Path('public/sw.js').read_text(); vote=w[w.index("u.pathname==='/api/vote'"):w.index("u.pathname==='/api/admin'")]; assert len(e)==37; assert len({x['nim'] for x in e})==37; assert '2026-11-15T16:59:00.000Z' in w; assert 'await TS(' not in vote; assert 'TTL=900000' in w; assert "document.getElementById('logout').addEventListener('click',window.doLogout)" in h; assert "logout.addEventListener('click',window.doLogout)" not in h; assert 'aifn1-v4-hardened' in sw; assert "document.getElementById('redeemForm')" in h; assert 'f.onsubmit=' not in h; assert 'AbortController()' in h; print('Roster, deadline, voting, dan logout fix valid')"
+
+      - name: Run application QA
+        run: npm run qa && node --check src/index.js
 
       - name: Apply D1 migrations
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          npx wrangler d1 migrations apply \
-            voting-aifn1 \
-            --remote
+        run: npx wrangler d1 migrations apply voting-aifn1 --remote
 
       - name: Upload ADMIN_KEY
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          printf '%s' "$ADMIN_KEY" |
-            npx wrangler secret put ADMIN_KEY
+        run: printf '%s' "$ADMIN_KEY" | npx wrangler secret put ADMIN_KEY
 
       - name: Upload Turnstile Secret Key
-        shell: bash
-        run: |
-          set -euo pipefail
+        run: printf '%s' "$TURNSTILE_SECRET_KEY" | npx wrangler secret put TURNSTILE_SECRET_KEY
 
-          printf '%s' "$TURNSTILE_SECRET_KEY" |
-            npx wrangler secret put TURNSTILE_SECRET_KEY
-
-      - name: Deploy Worker
+      - name: Deploy voting-aifn1 Worker
         id: deploy
         shell: bash
         run: |
           set -euo pipefail
+          rm -f wrangler-deploy.log
+          npx wrangler deploy 2>&1 | tee wrangler-deploy.log
+          DEPLOY_EXIT="${PIPESTATUS[0]}"
+          if [ "$DEPLOY_EXIT" -ne 0 ]; then exit "$DEPLOY_EXIT"; fi
+          WORKER_URL=$(grep -Eo 'https://[A-Za-z0-9.-]+\.workers\.dev' wrangler-deploy.log | grep -v '\.preview\.' | head -n 1 || true)
+          if [ -z "${WORKER_URL:-}" ]; then WORKER_URL="https://voting-aifn1.hicall.workers.dev"; fi
+          echo "worker_url=${WORKER_URL%/}" >> "$GITHUB_OUTPUT"
 
-          npx wrangler deploy 2>&1 |
-            tee wrangler-deploy.log
-
-          WORKER_URL=$(
-            grep -Eo \
-              'https://[A-Za-z0-9.-]+\.workers\.dev' \
-              wrangler-deploy.log |
-            grep -v '\.preview\.' |
-            head -n 1 || true
-          )
-
-          if [ -z "${WORKER_URL:-}" ]; then
-            WORKER_URL="https://voting-aifn1.hicall.workers.dev"
-          fi
-
-          WORKER_URL="${WORKER_URL%/}"
-
-          echo "worker_url=$WORKER_URL" \
-            >> "$GITHUB_OUTPUT"
-
-          echo "Production Worker URL:"
-          echo "$WORKER_URL"
-
-      - name: Verify deployment through Wrangler
+      - name: Record deployment evidence
         shell: bash
         run: |
           set -euo pipefail
-          npx wrangler deployments list
+          test -s wrangler-deploy.log || { echo "::error::Log deployment kosong"; exit 1; }
+          tail -n 40 wrangler-deploy.log
 
       - name: Optional workers.dev health check
         continue-on-error: true
@@ -206,91 +118,29 @@ jobs:
           WORKER_URL: ${{ steps.deploy.outputs.worker_url }}
         run: |
           set +e
-
-          rm -f api-config.json
-
-          HTTP_CODE=$(
-            curl \
-              --silent \
-              --show-error \
-              --location \
-              --connect-timeout 10 \
-              --max-time 30 \
-              --retry 2 \
-              --retry-delay 5 \
-              --retry-all-errors \
-              --output api-config.json \
-              --write-out "%{http_code}" \
-              --header "Accept: application/json" \
-              --header "Cache-Control: no-cache" \
-              --user-agent \
-              "Voting-AiFn1-Health-Check/1.0" \
-              "${WORKER_URL}/api/config"
-          )
-
+          HTTP_CODE=$(curl --silent --show-error --location --connect-timeout 10 --max-time 30 --retry 2 --retry-delay 5 --retry-all-errors --output api-config.json --write-out "%{http_code}" --header "Accept: application/json" --header "Cache-Control: no-cache" --user-agent "Voting-AiFn1-Health-Check/2.0" "${WORKER_URL}/api/config")
           echo "HTTP status: $HTTP_CODE"
-
-          if [ -f api-config.json ]; then
-            cat api-config.json
-            echo ""
-          fi
-
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "::warning::Health check informatif gagal atau terkena Cloudflare 1042. Deployment tetap terverifikasi melalui Wrangler."
-            exit 0
-          fi
-
-          python3 -c "import json; d=json.load(open('api-config.json')); assert len(d.get('candidates',[]))==37, 'Jumlah kandidat harus 37'; assert d.get('deadline')=='2026-11-13T04:30:00.000Z', 'Deadline server tidak sesuai'; print('Health check berhasil: 37 kandidat')"
+          test -f api-config.json && cat api-config.json || true
+          if [ "$HTTP_CODE" != "200" ]; then echo "::warning::Health check informatif gagal/1042. Deployment tidak digagalkan."; exit 0; fi
+          python3 -c "import json; d=json.load(open('api-config.json')); assert len(d.get('candidates',[]))==37; assert d.get('deadline')=='2026-11-15T16:59:00.000Z'; print('Health check berhasil: 37 kandidat')"
 
       - name: Show production URLs
-        shell: bash
         env:
           WORKER_URL: ${{ steps.deploy.outputs.worker_url }}
         run: |
-          set -euo pipefail
-
-          echo "## Deployment AiFn1 berhasil" \
-            >> "$GITHUB_STEP_SUMMARY"
-
-          echo "" \
-            >> "$GITHUB_STEP_SUMMARY"
-
-          echo "- Mahasiswa: ${WORKER_URL}" \
-            >> "$GITHUB_STEP_SUMMARY"
-
-          echo "- Admin: ${WORKER_URL}/admin.html" \
-            >> "$GITHUB_STEP_SUMMARY"
-
-          echo "- API: ${WORKER_URL}/api/config" \
-            >> "$GITHUB_STEP_SUMMARY"
-
-          echo "Halaman mahasiswa:"
-          echo "$WORKER_URL"
-
-          echo "Halaman admin:"
-          echo "${WORKER_URL}/admin.html"
+          echo "## Deployment AiFn1 berhasil" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Eligible: 37 mahasiswa" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Deadline: Minggu, 15 November 2026 pukul 23.59 WIB" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Mahasiswa: ${WORKER_URL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Admin: ${WORKER_URL}/admin.html" >> "$GITHUB_STEP_SUMMARY"
+          echo "- API: ${WORKER_URL}/api/config" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Commit generated D1 configuration
         if: success()
         shell: bash
         run: |
           set -euo pipefail
-
-          git config \
-            user.name \
-            "github-actions[bot]"
-
-          git config \
-            user.email \
-            "41898282+github-actions[bot]@users.noreply.github.com"
-
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add wrangler.jsonc
-
-          if git diff --cached --quiet; then
-            echo "Tidak ada perubahan konfigurasi."
-          else
-            git commit \
-              -m "chore: configure AiFn1 D1"
-
-            git push origin HEAD:main
-          fi
+          if ! git diff --cached --quiet; then git commit -m "chore: configure AiFn1 D1" && git push origin HEAD:main; fi
