@@ -23,3 +23,13 @@ Deadline diperpanjang sampai Minggu, 15 November 2026 pukul 23.59 WIB. UI pemili
 
 ## Hardened release v4
 Semua elemen permanen dan dinamis memakai referensi DOM eksplisit. Validasi NIM menormalkan angka, memberi status Turnstile, dan mencegah submit sebelum token tersedia. API client memiliki timeout 20 detik, penanganan respons non-JSON, dan pesan error yang dapat ditindaklanjuti. Cache: aifn1-v4-hardened.
+
+## Lecturer smoke test v5
+- ID khusus dosen: `1000`
+- Nama: Haikal Shiddiq S.Kom., M.T.
+- Wajib melewati Turnstile dan alur pemilihan yang sama.
+- Ballot disimpan di `smoke_ballots`, terpisah dari `ballots` mahasiswa.
+- Tidak memengaruhi 37 suara resmi, partisipasi, persentase, pemenang, atau hasil publik.
+- Detail kandidat smoke test hanya terlihat pada admin.
+- Publik hanya melihat status umum bahwa sistem telah diuji dosen.
+- Reset tersedia di admin dan tidak menyentuh data mahasiswa.
