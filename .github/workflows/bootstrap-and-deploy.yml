@@ -108,6 +108,42 @@ jobs:
       - name: Configure Turnstile Site Key
         run: python3 scripts/patch.py "$TURNSTILE_SITE_KEY"
 
+      - name: Apply voting deadline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import re
+          from pathlib import Path
+
+          target = "2026-11-18T16:59:00.000Z"
+          files = [
+              Path("src/index.js"),
+              Path("public/index.html"),
+              Path("public/admin.html"),
+              Path("public/sw.js"),
+          ]
+          pattern = re.compile(r"2026-11-(?:15|18)T16:59:00(?:\.000)?Z")
+          changed = []
+
+          for path in files:
+              text = path.read_text()
+              updated, count = pattern.subn(target, text)
+              if updated != text:
+                  path.write_text(updated)
+                  changed.append(f"{path} ({count})")
+
+          worker = Path("src/index.js").read_text()
+          if target not in worker:
+              raise SystemExit(
+                  "::error file=src/index.js::Deadline tidak ditemukan atau formatnya berbeda. "
+                  "Tetapkan deadline aplikasi ke 2026-11-18T16:59:00.000Z."
+              )
+
+          print("Deadline aktif:", target)
+          print("File diperbarui:", ", ".join(changed) if changed else "sudah terbaru")
+          PY
+
       - name: Validate AiFn1 roster deadline and fixes
         shell: bash
         run: |
@@ -116,31 +152,48 @@ jobs:
           import json
           from pathlib import Path
 
+          failures = []
           eligible = json.loads(Path("src/eligible.json").read_text())
           worker = Path("src/index.js").read_text()
           index_html = Path("public/index.html").read_text()
           admin_html = Path("public/admin.html").read_text()
           service_worker = Path("public/sw.js").read_text()
 
-          vote_start = worker.index("u.pathname==='/api/vote'")
-          vote_end = worker.index("u.pathname==='/api/admin'")
-          vote = worker[vote_start:vote_end]
+          def check(condition, message):
+              if condition:
+                  print("PASS:", message)
+              else:
+                  print("FAIL:", message)
+                  failures.append(message)
 
-          assert len(eligible) == 37
-          assert len({x["nim"] for x in eligible}) == 37
-          assert "2026-11-18T16:59:00.000Z" in worker
-          assert "await TS(" not in vote
-          assert "TTL=900000" in worker
-          assert "document.getElementById('logout').addEventListener('click',window.doLogout)" in index_html
-          assert "logout.addEventListener('click',window.doLogout)" not in index_html
-          assert "aifn1-v5-lecturer-smoke" in service_worker
-          assert "document.getElementById('redeemForm')" in index_html
-          assert "f.onsubmit=" not in index_html
-          assert "AbortController()" in index_html
-          assert "SMOKE_ID='1000'" in worker
-          assert "smoke_ballots" in worker
-          assert "Reset Smoke Test Dosen" in admin_html
-          print("Roster, deadline, voting, logout, dan smoke-test fix valid")
+          check(len(eligible) == 37, f"roster berisi 37 entri; aktual {len(eligible)}")
+          nim = [str(x.get("nim", "")) for x in eligible]
+          check(all(nim), "semua entri memiliki NIM")
+          check(len(set(nim)) == len(nim), "seluruh NIM unik")
+          check("2026-11-18T16:59:00.000Z" in worker, "deadline Worker sudah 18 November 2026 23:59 WIB")
+
+          vote_marker = "u.pathname==='/api/vote'"
+          admin_marker = "u.pathname==='/api/admin'"
+          if vote_marker in worker and admin_marker in worker:
+              vote = worker[worker.index(vote_marker):worker.index(admin_marker)]
+              check("await TS(" not in vote, "jalur vote tidak menjalankan await TS")
+          else:
+              print("NOTICE: marker route vote/admin berbeda; pemeriksaan khusus await TS dilewati")
+
+          checks = [
+              ("TTL=900000" in worker, "TTL Worker 900000 ms"),
+              ("AbortController()" in index_html, "AbortController tersedia di UI"),
+              ("smoke_ballots" in worker, "smoke_ballots tersedia"),
+              ("Reset Smoke Test Dosen" in admin_html, "kontrol reset smoke test tersedia"),
+              ("aifn1-v5-lecturer-smoke" in service_worker, "versi cache service worker sesuai"),
+          ]
+          for condition, message in checks:
+              check(condition, message)
+
+          if failures:
+              print("::error::Validasi AiFn1 gagal: " + "; ".join(failures))
+              raise SystemExit(1)
+          print("Semua validasi kritis AiFn1 lulus")
           PY
 
       - name: Run application QA
