@@ -42,7 +42,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for file in package.json wrangler.jsonc src/index.js src/eligible.json public/index.html public/admin.html public/manifest.webmanifest public/sw.js migrations/0001_init.sql scripts/bootstrap_d1.py scripts/patch.py scripts/qa.mjs; do
+          for file in package.json wrangler.jsonc src/index.js src/eligible.json public/index.html public/admin.html public/manifest.webmanifest public/sw.js migrations/0001_init.sql migrations/0002_lecturer_smoke_test.sql scripts/bootstrap_d1.py scripts/patch.py scripts/qa.mjs; do
             test -f "$file" || { echo "::error file=$file::File tidak ditemukan: $file"; exit 1; }
           done
           test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || { echo "::error::CLOUDFLARE_ACCOUNT_ID belum tersedia"; exit 1; }
@@ -77,7 +77,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -c "import json,pathlib; e=json.load(open('src/eligible.json')); w=pathlib.Path('src/index.js').read_text(); h=pathlib.Path('public/index.html').read_text(); sw=pathlib.Path('public/sw.js').read_text(); vote=w[w.index("u.pathname==='/api/vote'"):w.index("u.pathname==='/api/admin'")]; assert len(e)==37; assert len({x['nim'] for x in e})==37; assert '2026-11-15T16:59:00.000Z' in w; assert 'await TS(' not in vote; assert 'TTL=900000' in w; assert "document.getElementById('logout').addEventListener('click',window.doLogout)" in h; assert "logout.addEventListener('click',window.doLogout)" not in h; assert 'aifn1-v4-hardened' in sw; assert "document.getElementById('redeemForm')" in h; assert 'f.onsubmit=' not in h; assert 'AbortController()' in h; print('Roster, deadline, voting, dan logout fix valid')"
+          python3 -c "import json,pathlib; e=json.load(open('src/eligible.json')); w=pathlib.Path('src/index.js').read_text(); h=pathlib.Path('public/index.html').read_text(); sw=pathlib.Path('public/sw.js').read_text(); vote=w[w.index("u.pathname==='/api/vote'"):w.index("u.pathname==='/api/admin'")]; assert len(e)==37; assert len({x['nim'] for x in e})==37; assert '2026-11-15T16:59:00.000Z' in w; assert 'await TS(' not in vote; assert 'TTL=900000' in w; assert "document.getElementById('logout').addEventListener('click',window.doLogout)" in h; assert "logout.addEventListener('click',window.doLogout)" not in h; assert 'aifn1-v5-lecturer-smoke' in sw; assert "document.getElementById('redeemForm')" in h; assert 'f.onsubmit=' not in h; assert 'AbortController()' in h; assert "SMOKE_ID='1000'" in w; assert 'smoke_ballots' in w; assert 'Reset Smoke Test Dosen' in pathlib.Path('public/admin.html').read_text(); print('Roster, deadline, voting, dan logout fix valid')"
 
       - name: Run application QA
         run: npm run qa && node --check src/index.js
