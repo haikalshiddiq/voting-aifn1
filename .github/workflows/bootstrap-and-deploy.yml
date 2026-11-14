@@ -37,12 +37,19 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
 
       - name: Validate required files and secrets
         shell: bash
         run: |
           set -euo pipefail
-          for file in package.json wrangler.jsonc src/index.js src/eligible.json public/index.html public/admin.html public/manifest.webmanifest public/sw.js migrations/0001_init.sql migrations/0002_lecturer_smoke_test.sql scripts/bootstrap_d1.py scripts/patch.py scripts/qa.mjs; do
+          files=(
+            package.json wrangler.jsonc src/index.js src/eligible.json
+            public/index.html public/admin.html public/manifest.webmanifest public/sw.js
+            migrations/0001_init.sql migrations/0002_lecturer_smoke_test.sql
+            scripts/bootstrap_d1.py scripts/patch.py scripts/qa.mjs
+          )
+          for file in "${files[@]}"; do
             test -f "$file" || { echo "::error file=$file::File tidak ditemukan: $file"; exit 1; }
           done
           test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || { echo "::error::CLOUDFLARE_ACCOUNT_ID belum tersedia"; exit 1; }
@@ -53,13 +60,24 @@ jobs:
           test "${#ADMIN_KEY}" -ge 32 || { echo "::error::ADMIN_KEY minimal 32 karakter"; exit 1; }
 
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Normalize Wrangler configuration
         shell: bash
         run: |
           set -euo pipefail
-          python3 -c "import json,pathlib; p=pathlib.Path('wrangler.jsonc'); c=json.loads(p.read_text()); c.update({'name':'voting-aifn1','compatibility_date':'2026-11-11','workers_dev':True}); p.write_text(json.dumps(c,indent=2)+'\n')"
+          python3 <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("wrangler.jsonc")
+          c = json.loads(p.read_text())
+          c.update({
+              "name": "voting-aifn1",
+              "compatibility_date": "2026-11-11",
+              "workers_dev": True,
+          })
+          p.write_text(json.dumps(c, indent=2) + "\n")
+          PY
 
       - name: Create or locate AiFn1 D1 database
         run: python3 scripts/bootstrap_d1.py
@@ -68,7 +86,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -c "import json; c=json.load(open('wrangler.jsonc')); d=c.get('d1_databases',[]); assert len(d)==1; assert d[0].get('binding')=='DB'; assert d[0].get('database_name')=='voting-aifn1'; assert d[0].get('database_id') not in ('','REPLACE_WITH_D1_DATABASE_ID'); print('D1 siap:',d[0]['database_id'])"
+          python3 <<'PY'
+          import json
+          with open("wrangler.jsonc") as f:
+              c = json.load(f)
+          d = c.get("d1_databases", [])
+          assert len(d) == 1
+          assert d[0].get("binding") == "DB"
+          assert d[0].get("database_name") == "voting-aifn1"
+          assert d[0].get("database_id") not in ("", "REPLACE_WITH_D1_DATABASE_ID")
+          print("D1 siap:", d[0]["database_id"])
+          PY
 
       - name: Configure Turnstile Site Key
         run: python3 scripts/patch.py "$TURNSTILE_SITE_KEY"
@@ -77,7 +105,36 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -c "import json,pathlib; e=json.load(open('src/eligible.json')); w=pathlib.Path('src/index.js').read_text(); h=pathlib.Path('public/index.html').read_text(); sw=pathlib.Path('public/sw.js').read_text(); vote=w[w.index("u.pathname==='/api/vote'"):w.index("u.pathname==='/api/admin'")]; assert len(e)==37; assert len({x['nim'] for x in e})==37; assert '2026-11-15T16:59:00.000Z' in w; assert 'await TS(' not in vote; assert 'TTL=900000' in w; assert "document.getElementById('logout').addEventListener('click',window.doLogout)" in h; assert "logout.addEventListener('click',window.doLogout)" not in h; assert 'aifn1-v5-lecturer-smoke' in sw; assert "document.getElementById('redeemForm')" in h; assert 'f.onsubmit=' not in h; assert 'AbortController()' in h; assert "SMOKE_ID='1000'" in w; assert 'smoke_ballots' in w; assert 'Reset Smoke Test Dosen' in pathlib.Path('public/admin.html').read_text(); print('Roster, deadline, voting, dan logout fix valid')"
+          python3 <<'PY'
+          import json
+          from pathlib import Path
+
+          eligible = json.loads(Path("src/eligible.json").read_text())
+          worker = Path("src/index.js").read_text()
+          index_html = Path("public/index.html").read_text()
+          admin_html = Path("public/admin.html").read_text()
+          service_worker = Path("public/sw.js").read_text()
+
+          vote_start = worker.index("u.pathname==='/api/vote'")
+          vote_end = worker.index("u.pathname==='/api/admin'")
+          vote = worker[vote_start:vote_end]
+
+          assert len(eligible) == 37
+          assert len({x["nim"] for x in eligible}) == 37
+          assert "2026-11-18T16:59:00.000Z" in worker
+          assert "await TS(" not in vote
+          assert "TTL=900000" in worker
+          assert "document.getElementById('logout').addEventListener('click',window.doLogout)" in index_html
+          assert "logout.addEventListener('click',window.doLogout)" not in index_html
+          assert "aifn1-v5-lecturer-smoke" in service_worker
+          assert "document.getElementById('redeemForm')" in index_html
+          assert "f.onsubmit=" not in index_html
+          assert "AbortController()" in index_html
+          assert "SMOKE_ID='1000'" in worker
+          assert "smoke_ballots" in worker
+          assert "Reset Smoke Test Dosen" in admin_html
+          print("Roster, deadline, voting, logout, dan smoke-test fix valid")
+          PY
 
       - name: Run application QA
         run: npm run qa && node --check src/index.js
@@ -97,12 +154,14 @@ jobs:
         run: |
           set -euo pipefail
           rm -f wrangler-deploy.log
+          set +e
           npx wrangler deploy 2>&1 | tee wrangler-deploy.log
-          DEPLOY_EXIT="${PIPESTATUS[0]}"
-          if [ "$DEPLOY_EXIT" -ne 0 ]; then exit "$DEPLOY_EXIT"; fi
-          WORKER_URL=$(grep -Eo 'https://[A-Za-z0-9.-]+\.workers\.dev' wrangler-deploy.log | grep -v '\.preview\.' | head -n 1 || true)
-          if [ -z "${WORKER_URL:-}" ]; then WORKER_URL="https://voting-aifn1.hicall.workers.dev"; fi
-          echo "worker_url=${WORKER_URL%/}" >> "$GITHUB_OUTPUT"
+          deploy_exit="${PIPESTATUS[0]}"
+          set -e
+          if [ "$deploy_exit" -ne 0 ]; then exit "$deploy_exit"; fi
+          worker_url=$(grep -Eo 'https://[A-Za-z0-9.-]+\.workers\.dev' wrangler-deploy.log | grep -v '\.preview\.' | head -n 1 || true)
+          if [ -z "${worker_url:-}" ]; then worker_url="https://voting-aifn1.hicall.workers.dev"; fi
+          echo "worker_url=${worker_url%/}" >> "$GITHUB_OUTPUT"
 
       - name: Record deployment evidence
         shell: bash
@@ -111,29 +170,43 @@ jobs:
           test -s wrangler-deploy.log || { echo "::error::Log deployment kosong"; exit 1; }
           tail -n 40 wrangler-deploy.log
 
-      - name: Optional workers.dev health check
-        continue-on-error: true
+      - name: Production health and smoke check
         shell: bash
         env:
           WORKER_URL: ${{ steps.deploy.outputs.worker_url }}
         run: |
-          set +e
-          HTTP_CODE=$(curl --silent --show-error --location --connect-timeout 10 --max-time 30 --retry 2 --retry-delay 5 --retry-all-errors --output api-config.json --write-out "%{http_code}" --header "Accept: application/json" --header "Cache-Control: no-cache" --user-agent "Voting-AiFn1-Health-Check/2.0" "${WORKER_URL}/api/config")
-          echo "HTTP status: $HTTP_CODE"
-          test -f api-config.json && cat api-config.json || true
-          if [ "$HTTP_CODE" != "200" ]; then echo "::warning::Health check informatif gagal/1042. Deployment tidak digagalkan."; exit 0; fi
-          python3 -c "import json; d=json.load(open('api-config.json')); assert len(d.get('candidates',[]))==37; assert d.get('deadline')=='2026-11-15T16:59:00.000Z'; print('Health check berhasil: 37 kandidat')"
+          set -euo pipefail
+          http_code=$(curl --silent --show-error --location \
+            --connect-timeout 10 --max-time 30 \
+            --retry 3 --retry-delay 5 --retry-all-errors \
+            --output api-config.json --write-out "%{http_code}" \
+            --header "Accept: application/json" \
+            --header "Cache-Control: no-cache" \
+            --user-agent "Voting-AiFn1-Health-Check/3.0" \
+            "${WORKER_URL}/api/config")
+          echo "HTTP status: $http_code"
+          test "$http_code" = "200" || { cat api-config.json || true; exit 1; }
+          python3 <<'PY'
+          import json
+          with open("api-config.json") as f:
+              data = json.load(f)
+          assert len(data.get("candidates", [])) == 37
+          assert data.get("deadline") == "2026-11-18T16:59:00.000Z"
+          print("Health check berhasil: 37 kandidat dan deadline benar")
+          PY
 
       - name: Show production URLs
         env:
           WORKER_URL: ${{ steps.deploy.outputs.worker_url }}
         run: |
-          echo "## Deployment AiFn1 berhasil" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Eligible: 37 mahasiswa" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Deadline: Minggu, 15 November 2026 pukul 23.59 WIB" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Mahasiswa: ${WORKER_URL}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Admin: ${WORKER_URL}/admin.html" >> "$GITHUB_STEP_SUMMARY"
-          echo "- API: ${WORKER_URL}/api/config" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Deployment AiFn1 berhasil"
+            echo "- Eligible: 37 mahasiswa"
+            echo "- Deadline: Rabu, 18 November 2026 pukul 23.59 WIB"
+            echo "- Mahasiswa: ${WORKER_URL}"
+            echo "- Admin: ${WORKER_URL}/admin.html"
+            echo "- API: ${WORKER_URL}/api/config"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Commit generated D1 configuration
         if: success()
@@ -143,4 +216,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add wrangler.jsonc
-          if ! git diff --cached --quiet; then git commit -m "chore: configure AiFn1 D1" && git push origin HEAD:main; fi
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: configure AiFn1 D1"
+            git push origin HEAD:main
+          fi
